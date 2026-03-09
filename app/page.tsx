@@ -15,7 +15,10 @@ const DEMO_RATIO = 0.8;
 
 const DEMO_URL = "/daily/demo.png";
 
-const LS_PREFIX = "drw:sponsored:";
+const USER_LS_PREFIX = "drw:user:";
+const NOTIFY_LS_PREFIX = "drw:notified:";
+const OPEN_LOG_LS_PREFIX = "drw:open-logged:";
+const COMPLETE_LS_PREFIX = "drw:complete-notified:";
 
 function pad(n: number) {
   return String(n).padStart(2, "0");
@@ -46,24 +49,25 @@ function makeDeterministicBase(slotId: string, total: number, ratio: number) {
   return base;
 }
 
-function lsKey(slotId: string) {
-  return `${LS_PREFIX}${slotId}:${SPON_COLS}x${SPON_ROWS}`;
+function userLsKey(slotId: string) {
+  return `${USER_LS_PREFIX}${slotId}`;
 }
 
-function loadSponsored(slotId: string): Set<number> {
+function loadUserOpened(slotId: string): Set<number> {
   try {
-    const raw = localStorage.getItem(lsKey(slotId));
+    const raw = localStorage.getItem(userLsKey(slotId));
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
-    return new Set(arr);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((v) => typeof v === "number"));
   } catch {
     return new Set();
   }
 }
 
-function saveSponsored(slotId: string, indices: Set<number>) {
+function saveUserOpened(slotId: string, indices: Set<number>) {
   try {
-    localStorage.setItem(lsKey(slotId), JSON.stringify(Array.from(indices)));
+    localStorage.setItem(userLsKey(slotId), JSON.stringify(Array.from(indices)));
   } catch {}
 }
 
@@ -76,12 +80,24 @@ export default function Page() {
 
   const [demoBase, setDemoBase] = useState<Set<number>>(new Set());
   const [demoUser, setDemoUser] = useState<Set<number>>(new Set());
-  const [sponsored, setSponsored] = useState<Set<number>>(new Set());
+
+  const [sponsoredOpened, setSponsoredOpened] = useState<Set<number>>(new Set());
+  const [sponsoredUserOpened, setSponsoredUserOpened] = useState<Set<number>>(
+    new Set()
+  );
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  function logEvent(event: string, data: Record<string, unknown> = {}) {
+    fetch("/api/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, slotId, mode, ...data }),
+    }).catch(() => {});
+  }
 
   useEffect(() => {
     async function init() {
@@ -96,14 +112,29 @@ export default function Page() {
         setImageUrl(url);
 
         if (kind === "SPONSORED") {
-          setSponsored(loadSponsored(slotId));
           setDemoBase(new Set());
           setDemoUser(new Set());
+          setSponsoredUserOpened(loadUserOpened(slotId));
+
+          try {
+            const stateRes = await fetch(`/api/state?slotId=${slotId}`, {
+              cache: "no-store",
+            });
+            const stateData = await stateRes.json();
+            if (stateData?.ok) {
+              setSponsoredOpened(new Set<number>(stateData.opened || []));
+            } else {
+              setSponsoredOpened(new Set());
+            }
+          } catch {
+            setSponsoredOpened(new Set());
+          }
         } else {
           const total = DEMO_COLS * DEMO_ROWS;
           setDemoBase(makeDeterministicBase(slotId, total, DEMO_RATIO));
           setDemoUser(new Set());
-          setSponsored(new Set());
+          setSponsoredOpened(new Set());
+          setSponsoredUserOpened(new Set());
         }
       } catch {
         setMode("DEMO");
@@ -111,25 +142,36 @@ export default function Page() {
         const total = DEMO_COLS * DEMO_ROWS;
         setDemoBase(makeDeterministicBase(slotId, total, DEMO_RATIO));
         setDemoUser(new Set());
-        setSponsored(new Set());
+        setSponsoredOpened(new Set());
+        setSponsoredUserOpened(new Set());
       }
     }
 
     init();
   }, [slotId]);
 
-  function logEvent(event: string, data: Record<string, unknown> = {}) {
-    fetch("/api/log", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event, slotId, mode, ...data }),
-    }).catch(() => {});
-  }
+  useEffect(() => {
+    if (mode !== "SPONSORED") return;
+
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/state?slotId=${slotId}`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (data?.ok) {
+          setSponsoredOpened(new Set<number>(data.opened || []));
+        }
+      } catch {}
+    }, 2000);
+
+    return () => clearInterval(t);
+  }, [mode, slotId]);
 
   useEffect(() => {
     if (mode !== "SPONSORED") return;
 
-    const key = `notified-${slotId}`;
+    const key = `${NOTIFY_LS_PREFIX}${slotId}`;
 
     if (!localStorage.getItem(key)) {
       logEvent("SPONSOR_PUBLISHED");
@@ -160,18 +202,18 @@ export default function Page() {
       for (const i of demoBase) s.add(i);
       for (const i of demoUser) s.add(i);
     } else {
-      for (const i of sponsored) s.add(i);
+      for (const i of sponsoredOpened) s.add(i);
     }
 
     return s;
-  }, [mode, demoBase, demoUser, sponsored]);
+  }, [mode, demoBase, demoUser, sponsoredOpened]);
 
   const freeLeft = useMemo(() => {
-    const used = mode === "DEMO" ? demoUser.size : sponsored.size;
+    const used = mode === "DEMO" ? demoUser.size : sponsoredUserOpened.size;
     return Math.max(0, FREE_REVEALS - used);
-  }, [mode, demoUser.size, sponsored.size]);
+  }, [mode, demoUser.size, sponsoredUserOpened.size]);
 
-  function onClick(idx: number) {
+  async function onClick(idx: number) {
     if (revealed.has(idx)) return;
     if (freeLeft <= 0) return;
 
@@ -184,38 +226,49 @@ export default function Page() {
       return;
     }
 
-    const openKey = `open-logged-${slotId}-${idx}`;
+    const nextUserOpened = new Set(sponsoredUserOpened);
+    nextUserOpened.add(idx);
+    setSponsoredUserOpened(nextUserOpened);
+    saveUserOpened(slotId, nextUserOpened);
 
-    setSponsored((prev) => {
-      const next = new Set(prev);
-      next.add(idx);
-      saveSponsored(slotId, next);
+    const nextOpened = new Set(sponsoredOpened);
+    nextOpened.add(idx);
+    setSponsoredOpened(nextOpened);
 
-      if (!localStorage.getItem(openKey)) {
-        logEvent("OPEN", { idx, openedCount: next.size });
-        localStorage.setItem(openKey, "1");
+    const openKey = `${OPEN_LOG_LS_PREFIX}${slotId}-${idx}`;
+
+    if (!localStorage.getItem(openKey)) {
+      logEvent("OPEN", { idx, openedCount: nextOpened.size });
+      localStorage.setItem(openKey, "1");
+    }
+
+    if (nextOpened.size >= 300) {
+      const completeKey = `${COMPLETE_LS_PREFIX}${slotId}`;
+
+      if (!localStorage.getItem(completeKey)) {
+        fetch("/api/complete/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            openedCount: nextOpened.size,
+            totalCount: 300,
+            slotId,
+          }),
+        }).catch(() => {});
+
+        localStorage.setItem(completeKey, "1");
       }
+    }
 
-      if (next.size >= 300) {
-        const completeKey = `complete-notified-${slotId}`;
-
-        if (!localStorage.getItem(completeKey)) {
-          fetch("/api/complete/check", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              openedCount: next.size,
-              totalCount: 300,
-              slotId,
-            }),
-          }).catch(() => {});
-
-          localStorage.setItem(completeKey, "1");
-        }
+    try {
+      const res = await fetch(`/api/state?slotId=${slotId}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (data?.ok) {
+        setSponsoredOpened(new Set<number>(data.opened || []));
       }
-
-      return next;
-    });
+    } catch {}
   }
 
   function cellStyle(idx: number): React.CSSProperties {
@@ -244,6 +297,9 @@ export default function Page() {
         <div>
           <b>Revealed:</b> {revealed.size} / {grid.total}
         </div>
+        <div>
+          <b>Free Left:</b> {freeLeft}
+        </div>
       </div>
 
       <div
@@ -267,6 +323,7 @@ export default function Page() {
                 border: "1px solid #333",
                 padding: 0,
                 overflow: "hidden",
+                cursor: isOpen || freeLeft <= 0 ? "default" : "pointer",
               }}
             >
               {isOpen && (
