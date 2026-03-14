@@ -15,6 +15,10 @@ const DEMO_RATIO = 0.8;
 
 const DEMO_URL = "/daily/demo.png";
 
+/** 後でここだけ変えればOK */
+const COMPLETE_TITLE = "🎉 COMPLETE";
+const COMPLETE_MESSAGE = "Completed!";
+
 const USER_LS_PREFIX = "drw:user:";
 const NOTIFY_LS_PREFIX = "drw:notified:";
 const OPEN_LOG_LS_PREFIX = "drw:open-logged:";
@@ -57,8 +61,10 @@ function loadUserOpened(slotId: string): Set<number> {
   try {
     const raw = localStorage.getItem(userLsKey(slotId));
     if (!raw) return new Set();
+
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return new Set();
+
     return new Set(arr.filter((v) => typeof v === "number"));
   } catch {
     return new Set();
@@ -121,6 +127,7 @@ export default function Page() {
               cache: "no-store",
             });
             const stateData = await stateRes.json();
+
             if (stateData?.ok) {
               setSponsoredOpened(new Set<number>(stateData.opened || []));
             } else {
@@ -139,6 +146,7 @@ export default function Page() {
       } catch {
         setMode("DEMO");
         setImageUrl(DEMO_URL);
+
         const total = DEMO_COLS * DEMO_ROWS;
         setDemoBase(makeDeterministicBase(slotId, total, DEMO_RATIO));
         setDemoUser(new Set());
@@ -159,6 +167,7 @@ export default function Page() {
           cache: "no-store",
         });
         const data = await res.json();
+
         if (data?.ok) {
           setSponsoredOpened(new Set<number>(data.opened || []));
         }
@@ -190,9 +199,18 @@ export default function Page() {
 
   const grid = useMemo(() => {
     if (mode === "SPONSORED") {
-      return { cols: SPON_COLS, rows: SPON_ROWS, total: SPON_COLS * SPON_ROWS };
+      return {
+        cols: SPON_COLS,
+        rows: SPON_ROWS,
+        total: SPON_COLS * SPON_ROWS,
+      };
     }
-    return { cols: DEMO_COLS, rows: DEMO_ROWS, total: DEMO_COLS * DEMO_ROWS };
+
+    return {
+      cols: DEMO_COLS,
+      rows: DEMO_ROWS,
+      total: DEMO_COLS * DEMO_ROWS,
+    };
   }, [mode]);
 
   const revealed = useMemo(() => {
@@ -203,15 +221,18 @@ export default function Page() {
       for (const i of demoUser) s.add(i);
     } else {
       for (const i of sponsoredOpened) s.add(i);
+      for (const i of sponsoredUserOpened) s.add(i);
     }
 
     return s;
-  }, [mode, demoBase, demoUser, sponsoredOpened]);
+  }, [mode, demoBase, demoUser, sponsoredOpened, sponsoredUserOpened]);
 
   const freeLeft = useMemo(() => {
     const used = mode === "DEMO" ? demoUser.size : sponsoredUserOpened.size;
     return Math.max(0, FREE_REVEALS - used);
   }, [mode, demoUser.size, sponsoredUserOpened.size]);
+
+  const isComplete = mode === "SPONSORED" && revealed.size >= grid.total;
 
   async function onClick(idx: number) {
     if (revealed.has(idx)) return;
@@ -242,7 +263,7 @@ export default function Page() {
       localStorage.setItem(openKey, "1");
     }
 
-    if (nextOpened.size >= 300) {
+    if (nextOpened.size >= grid.total) {
       const completeKey = `${COMPLETE_LS_PREFIX}${slotId}`;
 
       if (!localStorage.getItem(completeKey)) {
@@ -251,7 +272,7 @@ export default function Page() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             openedCount: nextOpened.size,
-            totalCount: 300,
+            totalCount: grid.total,
             slotId,
           }),
         }).catch(() => {});
@@ -265,6 +286,7 @@ export default function Page() {
         cache: "no-store",
       });
       const data = await res.json();
+
       if (data?.ok) {
         setSponsoredOpened(new Set<number>(data.opened || []));
       }
@@ -340,27 +362,15 @@ export default function Page() {
         })}
       </div>
 
-      {revealed.size >= 300 && (
-        <div style={{ textAlign: "center", padding: 40 }}>
-          <h2>🎉 COMPLETE</h2>
-          <a
-            href="https://example.com"
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              display: "inline-block",
-              marginTop: 20,
-              padding: "12px 24px",
-              background: "#fff",
-              color: "#000",
-              textDecoration: "none",
-              borderRadius: 8,
-            }}
-          >
-            スポンサーサイトを見る
-          </a>
-        </div>
-      )}
+      {isComplete && (
+  <div style={{ textAlign: "center", padding: 40 }}>
+    <h2 style={{ fontSize: 32, marginBottom: 12 }}>{COMPLETE_TITLE}</h2>
+
+    <p style={{ fontSize: 20, marginBottom: 20 }}>
+  全てのピクセルが公開されました
+</p>
+  </div>
+)}
     </div>
   );
 }
